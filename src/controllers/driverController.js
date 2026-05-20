@@ -1,26 +1,13 @@
-const { prisma } = require('../config/db');
+'use strict';
+
+const { prisma }       = require('../config/db');
 const { uploadToCloudinary } = require('../utils/cloudinaryUpload');
-const { buildRideFilter } = require('../utils/rideFilters');
+const { buildRideFilter }    = require('../utils/rideFilters');
 const { createNotificationRecord } = require('../utils/notificationHelpers');
 const { transferDriverPayoutForBooking } = require('./paymentController');
-
-const trainingDefaults = [
-    { moduleNumber: 1, title: 'Who We Are' },
-    { moduleNumber: 2, title: 'The Chauffeur App' },
-    { moduleNumber: 3, title: 'Reviewing Rides and Waiting Time Policy' },
-    { moduleNumber: 4, title: 'Service Improvement Opportunities' },
-    { moduleNumber: 5, title: 'Chauffeur Values - Act with Integrity' },
-    { moduleNumber: 6, title: 'Chauffeur Values - Be Adaptable' },
-    { moduleNumber: 7, title: 'Chauffeur Values - Be Consistent' },
-    { moduleNumber: 8, title: 'Chauffeur Values - Be Discreet' },
-    { moduleNumber: 9, title: 'Chauffeur Values - Be Refined' },
-    { moduleNumber: 10, title: 'Chauffeur Values - Be Reliable' },
-    { moduleNumber: 11, title: 'Chauffeur Values - Be Punctual' },
-    { moduleNumber: 12, title: 'Chauffeur Values - Be Respectful' },
-    { moduleNumber: 13, title: 'Chauffeur Values - Be Vehicle Champions' },
-    { moduleNumber: 14, title: 'Chauffeur Values - Go Above and Beyond' },
-    { moduleNumber: 15, title: 'Chauffeur Values - Prioritize Safety' },
-];
+const asyncHandler     = require('../utils/asyncHandler');
+const { sendSuccess, sendError } = require('../utils/apiResponse');
+const { TRAINING_DEFAULTS } = require('../utils/constants');
 
 // ─── INCLUDE CONFIG ───────────────────────────────────────────────────────────
 // Standard include for driver queries
@@ -157,11 +144,11 @@ const getDriverForUser = async (userId) => {
                 companyType: 'Pending',
                 taxIdentificationNumber: 'Pending',
                 businessRegistrationNumber: 'Pending',
-                trainingTotalModules: trainingDefaults.length,
+                trainingTotalModules: TRAINING_DEFAULTS.length,
                 trainingCompletedModules: 0,
                 trainingIsComplete: false,
                 trainingModules: {
-                    create: trainingDefaults.map((m) => ({
+                    create: TRAINING_DEFAULTS.map((m) => ({
                         moduleNumber: m.moduleNumber,
                         title: m.title,
                         progressPercentage: 0,
@@ -284,7 +271,10 @@ const getOnboardingStepData = (driver, step) => {
         'required-documents': driver.requiredDocuments,
         'partner-training': formatted.partnerTraining,
         'contract-agreement': formatted.contractAgreement,
-        'payment-information': { paymentInformation: driver.paymentInformation },
+        'payment-information': {
+            stripeAccountId: driver.stripeAccountId,
+            stripeOnboarded: driver.stripeOnboarded,
+        },
         availability: formatted.availability,
     };
     return stepDataMap[step];
@@ -296,7 +286,6 @@ const mapRideForDriver = (booking) => {
     const passengerName = booking.userId
         ? `${user.firstName || ''} ${user.lastName || ''}`.trim()
         : `${booking.passengerFirstName || ''} ${booking.passengerLastName || ''}`.trim();
-
     return {
         id: booking.id,
         confNumber: booking.confNumber || `CNF-${booking.id.slice(-6).toUpperCase()}`,
@@ -324,96 +313,97 @@ const mapRideForDriver = (booking) => {
         },
         specialInstructions: booking.specialInstructions || '',
         flightNumber: booking.flightNumber || '',
-        vehicleCategory: booking.vehicleCategory,
-        totalAmount: typeof booking.totalAmount === 'number'
-            ? booking.totalAmount
-            : (booking.vehicleCategory?.baseFare || 0),
-        assignedDriverId: booking.assignedDriverId,
+        vehicleCategory: booking.vehicleCategory || null,
+        totalAmount: typeof booking.totalAmount === 'number' ? booking.totalAmount : (booking.tripPrice || 0) + (booking.tollCharges || 0) + (booking.childSeatsFee || 0) + (booking.otherFees || 0),
+        assignedDriverId: booking.assignedDriverId || null,
         createdAt: booking.createdAt,
         updatedAt: booking.updatedAt,
+        chargesAndFees: {
+            tripPrice: booking.tripPrice || 0,
+            tollCharges: booking.tollCharges || 0,
+            childSeatsFee: booking.childSeatsFee || 0,
+            otherFees: booking.otherFees || 0,
+            paymentStatus: booking.paymentStatus || null,
+            paymentIntentId: booking.paymentIntentId || null,
+            paymentMethodId: booking.paymentMethodId || null,
+        },
     };
 };
 
-// Map a booking to the detailed driver-facing ride shape
+// Map a booking to the detailed driver-facing ride shape (matches frontend expected shape)
 const mapRideDetailsForDriver = (booking) => {
     const user = booking.user || {};
+    const passengerName = booking.userId
+        ? `${user.firstName || ''} ${user.lastName || ''}`.trim()
+        : `${booking.passengerFirstName || ''} ${booking.passengerLastName || ''}`.trim();
+
     return {
         id: booking.id,
         confNumber: booking.confNumber || `CNF-${booking.id.slice(-6).toUpperCase()}`,
-        bookingType: booking.type,
-        tripStatus: booking.rideStatus,
-        createdAt: booking.createdAt,
+        rideStatus: booking.rideStatus || 'upcoming',
+        type: booking.type,
         date: booking.date,
         time: booking.time,
-        durationHours: booking.hours || null,
+        passenger: {
+            name: passengerName || 'Guest Passenger',
+            email: user.email || booking.passengerEmail || booking.bookerEmail || null,
+            phone: user.phone || booking.passengerPhone || booking.bookerPhone || null,
+        },
         routingInformation: {
             pickupLocation: booking.pickupLocation,
             stopLocations: booking.stopLocations?.map((s) => s.location) || [],
             dropoffLocation: booking.dropoffLocation,
         },
-        vehicle: {
-            category: booking.vehicleCategory,
-            noOfPassengers: booking.noOfPassengers,
-            luggage: booking.luggage,
-            childSeats: {
-                infant: booking.childSeatInfant || 0,
-                toddler: booking.childSeatToddler || 0,
-                booster: booking.childSeatBooster || 0,
-            },
+        noOfPassengers: booking.noOfPassengers,
+        luggage: booking.luggage,
+        childSeatRequired: booking.childSeatRequired,
+        childSeats: {
+            infant: booking.childSeatInfant || 0,
+            toddler: booking.childSeatToddler || 0,
+            booster: booking.childSeatBooster || 0,
         },
-        customerInfo: {
-            firstName: user.firstName || null,
-            lastName: user.lastName || null,
-            email: user.email || null,
-            phone: user.phone || null,
-        },
-        guestInfo: {
-            firstName: booking.passengerFirstName || null,
-            lastName: booking.passengerLastName || null,
-            email: booking.passengerEmail || null,
-            phone: booking.passengerPhone || null,
-        },
+        specialInstructions: booking.specialInstructions || '',
+        flightNumber: booking.flightNumber || '',
+        vehicleCategory: booking.vehicleCategory || null,
+        totalAmount: typeof booking.totalAmount === 'number' ? booking.totalAmount : (booking.tripPrice || 0) + (booking.tollCharges || 0) + (booking.childSeatsFee || 0) + (booking.otherFees || 0),
+        assignedDriverId: booking.assignedDriverId || null,
+        createdAt: booking.createdAt,
+        updatedAt: booking.updatedAt,
         chargesAndFees: {
             tripPrice: booking.tripPrice || 0,
+            tollCharges: booking.tollCharges || 0,
             childSeatsFee: booking.childSeatsFee || 0,
             otherFees: booking.otherFees || 0,
-            payment: typeof booking.totalAmount === 'number' ? booking.totalAmount : 0,
+            paymentStatus: booking.paymentStatus || null,
+            paymentIntentId: booking.paymentIntentId || null,
+            paymentMethodId: booking.paymentMethodId || null,
         },
-        chauffeurNotes: booking.specialInstructions || '',
-        assignedDriverId: booking.assignedDriverId,
     };
 };
 
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 
-exports.getMyOnboarding = async (req, res) => {
-    try {
-        const { error, driver } = await getDriverForUser(req.user.id);
-        if (error) return res.status(error.code).json({ success: false, message: error.message });
-        return res.status(200).json({ success: true, data: formatDriver(driver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+exports.getMyOnboarding = asyncHandler(async (req, res) => {
+    const { error, driver } = await getDriverForUser(req.user.id);
+    if (error) return res.status(error.code).json({ success: false, message: error.message });
+    return res.status(200).json({ success: true, data: formatDriver(driver) });
+});
 
-exports.getMyProfile = async (req, res) => {
-    try {
-        const { error, user, driver } = await getDriverForUser(req.user.id);
-        if (error) return res.status(error.code).json({ success: false, message: error.message });
-        return res.status(200).json({
-            success: true,
-            data: {
-                ...buildDriverProfileView(user, driver),
-                onboarding: formatDriver(driver),
-            },
-        });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+exports.getMyProfile = asyncHandler(async (req, res) => {
+    const { error, user, driver } = await getDriverForUser(req.user.id);
+    if (error) return res.status(error.code).json({ success: false, message: error.message });
+    return res.status(200).json({
+        success: true,
+        data: {
+            ...buildDriverProfileView(user, driver),
+            onboarding: formatDriver(driver),
+        },
+    });
+});
 
-exports.updateMyPersonalInfo = async (req, res) => {
-    try {
+
+exports.updateMyPersonalInfo = asyncHandler(async (req, res) => {
+
         const { error, user } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -481,13 +471,10 @@ exports.updateMyPersonalInfo = async (req, res) => {
                 onboardingCompleted: updatedUser.onboardingCompleted,
             },
         });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.getMyOnboardingStep = async (req, res) => {
-    try {
+exports.getMyOnboardingStep = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -497,13 +484,10 @@ exports.getMyOnboardingStep = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Invalid onboarding step' });
         }
         return res.status(200).json({ success: true, step, data });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateCompanyInformation = async (req, res) => {
-    try {
+exports.updateCompanyInformation = asyncHandler(async (req, res) => {
+
         const { error, user, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -535,13 +519,10 @@ exports.updateCompanyInformation = async (req, res) => {
         ]);
 
         return res.status(200).json({ success: true, message: 'Company information updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateFleetInformation = async (req, res) => {
-    try {
+exports.updateFleetInformation = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -557,13 +538,10 @@ exports.updateFleetInformation = async (req, res) => {
 
         const updatedDriver = await prisma.driver.update({ where: { id: driver.id }, data, include: driverInclude });
         return res.status(200).json({ success: true, message: 'Fleet information updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateFirstChauffeurInformation = async (req, res) => {
-    try {
+exports.updateFirstChauffeurInformation = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -578,13 +556,10 @@ exports.updateFirstChauffeurInformation = async (req, res) => {
 
         const updatedDriver = await prisma.driver.update({ where: { id: driver.id }, data, include: driverInclude });
         return res.status(200).json({ success: true, message: 'First chauffeur information updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateFirstVehicleInformation = async (req, res) => {
-    try {
+exports.updateFirstVehicleInformation = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -603,142 +578,29 @@ exports.updateFirstVehicleInformation = async (req, res) => {
 
         const updatedDriver = await prisma.driver.update({ where: { id: driver.id }, data, include: driverInclude });
         return res.status(200).json({ success: true, message: 'First vehicle information updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateRequiredDocuments = async (req, res) => {
-    try {
+exports.updateRequiredDocuments = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
         // req.body contains flat doc fields matching DriverDocument columns
         const docData = req.body;
 
-        // Upsert the DriverDocument record
+        // Upsert using the existing field-key helpers — avoids duplicating every column twice
         await prisma.driverDocument.upsert({
-            where: { driverId: driver.id },
-            update: {
-                // Flat fields — NO nested objects
-                w9FormUrl: docData.w9FormUrl || null,
-                w9FormExpiry: normalizeExpiry(docData.w9FormExpiry),
-                w9FormStatus: docData.w9FormStatus || 'missing',
-
-                articleOfIncorporationUrl: docData.articleOfIncorporationUrl || null,
-                articleOfIncorporationExpiry: normalizeExpiry(docData.articleOfIncorporationExpiry),
-                articleOfIncorporationStatus: docData.articleOfIncorporationStatus || 'missing',
-
-                einCertificateUrl: docData.einCertificateUrl || null,
-                einCertificateExpiry: normalizeExpiry(docData.einCertificateExpiry),
-                einCertificateStatus: docData.einCertificateStatus || 'missing',
-
-                cityPermitUrl: docData.cityPermitUrl || null,
-                cityPermitExpiry: normalizeExpiry(docData.cityPermitExpiry),
-                cityPermitStatus: docData.cityPermitStatus || 'missing',
-
-                voidCheckUrl: docData.voidCheckUrl || null,
-                voidCheckExpiry: normalizeExpiry(docData.voidCheckExpiry),
-                voidCheckStatus: docData.voidCheckStatus || 'missing',
-
-                profilePictureUrl: docData.profilePictureUrl || null,
-                profilePictureExpiry: normalizeExpiry(docData.profilePictureExpiry),
-                profilePictureStatus: docData.profilePictureStatus || 'missing',
-
-                licensePictureUrl: docData.licensePictureUrl || null,
-                licensePictureExpiry: normalizeExpiry(docData.licensePictureExpiry),
-                licensePictureStatus: docData.licensePictureStatus || 'missing',
-
-                limoLicenseDecalUrl: docData.limoLicenseDecalUrl || null,
-                limoLicenseDecalExpiry: normalizeExpiry(docData.limoLicenseDecalExpiry),
-                limoLicenseDecalStatus: docData.limoLicenseDecalStatus || 'missing',
-
-                liabilityInsuranceUrl: docData.liabilityInsuranceUrl || null,
-                liabilityInsuranceExpiry: normalizeExpiry(docData.liabilityInsuranceExpiry),
-                liabilityInsuranceStatus: docData.liabilityInsuranceStatus || 'missing',
-
-                vehicleRegistrationUrl: docData.vehicleRegistrationUrl || null,
-                vehicleRegistrationExpiry: normalizeExpiry(docData.vehicleRegistrationExpiry),
-                vehicleRegistrationStatus: docData.vehicleRegistrationStatus || 'missing',
-
-                cityPermittedStickerUrl: docData.cityPermittedStickerUrl || null,
-                cityPermittedStickerExpiry: normalizeExpiry(docData.cityPermittedStickerExpiry),
-                cityPermittedStickerStatus: docData.cityPermittedStickerStatus || 'missing',
-
-                licensePlatePhotoUrl: docData.licensePlatePhotoUrl || null,
-                licensePlatePhotoExpiry: normalizeExpiry(docData.licensePlatePhotoExpiry),
-                licensePlatePhotoStatus: docData.licensePlatePhotoStatus || 'missing',
-
-                airportPermitUrl: docData.airportPermitUrl || null,
-                airportPermitExpiry: normalizeExpiry(docData.airportPermitExpiry),
-                airportPermitStatus: docData.airportPermitStatus || 'missing',
-            },
-            create: {
-                driverId: driver.id,
-
-                w9FormUrl: docData.w9FormUrl || null,
-                w9FormExpiry: normalizeExpiry(docData.w9FormExpiry),
-                w9FormStatus: docData.w9FormStatus || 'missing',
-
-                articleOfIncorporationUrl: docData.articleOfIncorporationUrl || null,
-                articleOfIncorporationExpiry: normalizeExpiry(docData.articleOfIncorporationExpiry),
-                articleOfIncorporationStatus: docData.articleOfIncorporationStatus || 'missing',
-
-                einCertificateUrl: docData.einCertificateUrl || null,
-                einCertificateExpiry: normalizeExpiry(docData.einCertificateExpiry),
-                einCertificateStatus: docData.einCertificateStatus || 'missing',
-
-                cityPermitUrl: docData.cityPermitUrl || null,
-                cityPermitExpiry: normalizeExpiry(docData.cityPermitExpiry),
-                cityPermitStatus: docData.cityPermitStatus || 'missing',
-
-                voidCheckUrl: docData.voidCheckUrl || null,
-                voidCheckExpiry: normalizeExpiry(docData.voidCheckExpiry),
-                voidCheckStatus: docData.voidCheckStatus || 'missing',
-
-                profilePictureUrl: docData.profilePictureUrl || null,
-                profilePictureExpiry: normalizeExpiry(docData.profilePictureExpiry),
-                profilePictureStatus: docData.profilePictureStatus || 'missing',
-
-                licensePictureUrl: docData.licensePictureUrl || null,
-                licensePictureExpiry: normalizeExpiry(docData.licensePictureExpiry),
-                licensePictureStatus: docData.licensePictureStatus || 'missing',
-
-                limoLicenseDecalUrl: docData.limoLicenseDecalUrl || null,
-                limoLicenseDecalExpiry: normalizeExpiry(docData.limoLicenseDecalExpiry),
-                limoLicenseDecalStatus: docData.limoLicenseDecalStatus || 'missing',
-
-                liabilityInsuranceUrl: docData.liabilityInsuranceUrl || null,
-                liabilityInsuranceExpiry: normalizeExpiry(docData.liabilityInsuranceExpiry),
-                liabilityInsuranceStatus: docData.liabilityInsuranceStatus || 'missing',
-
-                vehicleRegistrationUrl: docData.vehicleRegistrationUrl || null,
-                vehicleRegistrationExpiry: normalizeExpiry(docData.vehicleRegistrationExpiry),
-                vehicleRegistrationStatus: docData.vehicleRegistrationStatus || 'missing',
-
-                cityPermittedStickerUrl: docData.cityPermittedStickerUrl || null,
-                cityPermittedStickerExpiry: normalizeExpiry(docData.cityPermittedStickerExpiry),
-                cityPermittedStickerStatus: docData.cityPermittedStickerStatus || 'missing',
-
-                licensePlatePhotoUrl: docData.licensePlatePhotoUrl || null,
-                licensePlatePhotoExpiry: normalizeExpiry(docData.licensePlatePhotoExpiry),
-                licensePlatePhotoStatus: docData.licensePlatePhotoStatus || 'missing',
-
-                airportPermitUrl: docData.airportPermitUrl || null,
-                airportPermitExpiry: normalizeExpiry(docData.airportPermitExpiry),
-                airportPermitStatus: docData.airportPermitStatus || 'missing',
-            },
+            where:  { driverId: driver.id },
+            update: buildDocumentUpdateData(docData),
+            create: { driverId: driver.id, ...buildDocumentCreateData(docData) },
         });
 
         const updatedDriver = await prisma.driver.findUnique({ where: { id: driver.id }, include: driverInclude });
         return res.status(200).json({ success: true, message: 'Required documents updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updatePartnerTraining = async (req, res) => {
-    try {
+exports.updatePartnerTraining = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -774,13 +636,10 @@ exports.updatePartnerTraining = async (req, res) => {
 
         const updatedDriver = await prisma.driver.findUnique({ where: { id: driver.id }, include: driverInclude });
         return res.status(200).json({ success: true, message: 'Partner training updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateContractAgreement = async (req, res) => {
-    try {
+exports.updateContractAgreement = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -792,33 +651,33 @@ exports.updateContractAgreement = async (req, res) => {
 
         const updatedDriver = await prisma.driver.update({ where: { id: driver.id }, data, include: driverInclude });
         return res.status(200).json({ success: true, message: 'Contract agreement updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updatePaymentInformation = async (req, res) => {
-    try {
+exports.updatePaymentInformation = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
-        if (typeof req.body.paymentInformation !== 'boolean') {
-            return res.status(400).json({ success: false, message: 'paymentInformation must be boolean' });
+        const { stripeAccountId, stripeOnboarded } = req.body;
+
+        if (stripeAccountId === undefined && stripeOnboarded === undefined) {
+            return res.status(400).json({ success: false, message: 'stripeAccountId or stripeOnboarded is required' });
         }
+
+        const data = {};
+        if (stripeAccountId !== undefined) data.stripeAccountId = stripeAccountId;
+        if (stripeOnboarded !== undefined) data.stripeOnboarded = stripeOnboarded;
 
         const updatedDriver = await prisma.driver.update({
             where: { id: driver.id },
-            data: { paymentInformation: req.body.paymentInformation },
+            data,
             include: driverInclude,
         });
-        return res.status(200).json({ success: true, message: 'Payment information status updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+        return res.status(200).json({ success: true, message: 'Stripe payment status updated', data: formatDriver(updatedDriver) });
+});
 
-exports.updateAvailability = async (req, res) => {
-    try {
+exports.updateAvailability = asyncHandler(async (req, res) => {
+
         const { error, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -835,7 +694,6 @@ exports.updateAvailability = async (req, res) => {
             for (const day of days) {
                 const schedule = body.weeklySchedule[day];
                 if (!schedule) continue;
-                const cap = day.charAt(0).toUpperCase() + day.slice(1);
                 if (schedule.enabled !== undefined) data[`${day}Enabled`] = schedule.enabled;
                 if (schedule.startTime !== undefined) data[`${day}Start`] = schedule.startTime;
                 if (schedule.endTime !== undefined) data[`${day}End`] = schedule.endTime;
@@ -844,13 +702,10 @@ exports.updateAvailability = async (req, res) => {
 
         const updatedDriver = await prisma.driver.update({ where: { id: driver.id }, data, include: driverInclude });
         return res.status(200).json({ success: true, message: 'Availability updated', data: formatDriver(updatedDriver) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateOnboardingFields = async (req, res) => {
-    try {
+exports.updateOnboardingFields = asyncHandler(async (req, res) => {
+
         const { error, user, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -940,7 +795,6 @@ exports.updateOnboardingFields = async (req, res) => {
             || body.signed !== undefined
             || body.confirmationAgreement !== undefined
             || body.place !== undefined
-            || body.paymentInformation !== undefined
             || body.availability !== undefined
             || body.timeZone !== undefined
             || body.notes !== undefined
@@ -949,7 +803,7 @@ exports.updateOnboardingFields = async (req, res) => {
         ) {
             return res.status(400).json({
                 success: false,
-                message: 'requiredDocuments, partnerTraining, contractAgreement, paymentInformation, and availability are not supported on this endpoint',
+                message: 'requiredDocuments, partnerTraining, contractAgreement, and availability are not supported on this endpoint',
             });
         }
 
@@ -976,13 +830,10 @@ exports.updateOnboardingFields = async (req, res) => {
             message: 'Onboarding updated',
             data: formatDriver(updatedDriver),
         });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.submitOnboarding = async (req, res) => {
-    try {
+exports.submitOnboarding = asyncHandler(async (req, res) => {
+
         const { error, user, driver } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1000,13 +851,10 @@ exports.submitOnboarding = async (req, res) => {
             message: 'Partner onboarding submitted successfully',
             data: formatDriver(updatedDriver),
         });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.getDriverRides = async (req, res) => {
-    try {
+exports.getDriverRides = asyncHandler(async (req, res) => {
+
         const { error } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1058,13 +906,10 @@ exports.getDriverRides = async (req, res) => {
             totalPages: Math.ceil(total / limit),
             data: rides.map(mapRideForDriver),
         });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.getDriverRideById = async (req, res) => {
-    try {
+exports.getDriverRideById = asyncHandler(async (req, res) => {
+
         const { error } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1078,13 +923,10 @@ exports.getDriverRideById = async (req, res) => {
         }
 
         return res.status(200).json({ success: true, data: mapRideForDriver(ride) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.getDriverRideDetails = async (req, res) => {
-    try {
+exports.getDriverRideDetails = asyncHandler(async (req, res) => {
+
         const { error } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1098,13 +940,10 @@ exports.getDriverRideDetails = async (req, res) => {
         }
 
         return res.status(200).json({ success: true, data: mapRideDetailsForDriver(ride) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.assignRideToMe = async (req, res) => {
-    try {
+exports.assignRideToMe = asyncHandler(async (req, res) => {
+
         const { error } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1150,13 +989,10 @@ exports.assignRideToMe = async (req, res) => {
         }
 
         return res.status(200).json({ success: true, message: 'Ride assigned successfully', data: mapRideForDriver(updatedRide), payout });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.updateMyRideStatus = async (req, res) => {
-    try {
+exports.updateMyRideStatus = asyncHandler(async (req, res) => {
+
         const { error } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1200,13 +1036,10 @@ exports.updateMyRideStatus = async (req, res) => {
         }
 
         return res.status(200).json({ success: true, message: 'Ride status updated', data: mapRideForDriver(updatedRide) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.confirmPickup = async (req, res) => {
-    try {
+exports.confirmPickup = asyncHandler(async (req, res) => {
+
         const { error } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1244,13 +1077,10 @@ exports.confirmPickup = async (req, res) => {
         }
 
         return res.status(200).json({ success: true, message: 'Pickup confirmed successfully', data: mapRideForDriver(updatedRide) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.cancelTrip = async (req, res) => {
-    try {
+exports.cancelTrip = asyncHandler(async (req, res) => {
+
         const { error } = await getDriverForUser(req.user.id);
         if (error) return res.status(error.code).json({ success: false, message: error.message });
 
@@ -1288,13 +1118,10 @@ exports.cancelTrip = async (req, res) => {
         }
 
         return res.status(200).json({ success: true, message: 'Trip cancelled successfully', data: mapRideForDriver(updatedRide) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+});
 
-exports.uploadOnboardingFile = async (req, res) => {
-    try {
+exports.uploadOnboardingFile = asyncHandler(async (req, res) => {
+
         if (!req.file) {
             return res.status(400).json({ success: false, message: 'No file uploaded' });
         }
@@ -1311,8 +1138,4 @@ exports.uploadOnboardingFile = async (req, res) => {
             url: result.secure_url,
             publicId: result.public_id,
         });
-    } catch (error) {
-        console.error('Cloudinary upload error:', error);
-        return res.status(500).json({ success: false, message: error.message || 'Error uploading file to Cloudinary' });
-    }
-};
+});

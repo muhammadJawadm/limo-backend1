@@ -10,6 +10,7 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ============================================================
@@ -57,9 +58,12 @@ enum DocumentStatus {
 
 enum VehicleClassification {
   sedan
+  business_sedan
+  premium_sedan
   suv
-  van
-  luxury
+  luxury_suv
+  premium_suv
+  
 }
 
 // ============================================================
@@ -150,7 +154,9 @@ model VehicleCategory {
   luggageCapacity  Int
   passengerCapacity Int
   baseFare         Float
-  perMileRate      Float
+  perMileRate30    Float
+  perMileRate40    Float
+  perHour          Float
   picture          String
 
   // Relations
@@ -215,7 +221,6 @@ model Driver {
   contractPlace              String?
 
   // Payment & Stripe
-  paymentInformation         Boolean @default(false)
   stripeAccountId            String?
   stripeOnboarded            Boolean @default(false)
 
@@ -386,6 +391,9 @@ model Booking {
   isGuest             Boolean       @default(false)
   specialInstructions String?
   isComplete          Boolean       @default(false)
+  twilioConversationSid  String? 
+  
+
 
   // Child Seats (flattened)
   childSeatInfant     Int           @default(0)
@@ -404,20 +412,24 @@ model Booking {
   bookerEmail         String?
   bookerPhone         String?
 
+  // Distance & Fare Calculation
+  distanceMiles       Float?        @default(0)
+
   // Charges and Fees (flattened)
   tripPrice           Float         @default(0)
+  tollCharges         Float         @default(0)
   childSeatsFee       Float         @default(0)
   otherFees           Float         @default(0)
 
   // Payment Info (flattened)
-  cardHolderName      String?
-  cardNumberLast4     String?
-  expiryDate          String?
-  billingAddress      String?
-
   // Payment Status
   paymentStatus       PaymentStatus @default(pending)
   paymentIntentId     String?
+  paymentMethodId     String?
+  cardBrand           String?
+  chargeId            String?
+  receiptUrl          String?
+  paymentConfirmedAt  DateTime?
   platformFee         Float         @default(0)
   driverAmount        Float         @default(0)
 
@@ -483,4 +495,20 @@ model Notification {
   @@index([recipientUserId])
   @@index([isRead])
   @@index([createdAt])
+}
+
+// ============================================================
+// SUPPORT REQUEST
+// ============================================================
+
+model SupportRequest {
+  id          String   @id @default(uuid())
+  firstName   String
+  lastName    String
+  email       String
+  phone       String
+  description String
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }

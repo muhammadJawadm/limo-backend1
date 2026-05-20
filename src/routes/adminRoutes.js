@@ -12,5 +12,6 @@ router.get('/vehicle-categories', adminController.getAllVehicleCategories);
 router.get('/bookings', adminController.getAllBookings);
 router.get('/notifications', adminController.getAllNotifications);
 router.get('/payments', adminController.getAllPayments);
+router.get('/support-requests', adminController.getAllSupportRequests);
 
 module.exports = router;

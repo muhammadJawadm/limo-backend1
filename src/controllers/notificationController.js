@@ -1,65 +1,57 @@
-const { prisma } = require('../config/db');
-const {
-    allowedNotificationRoles,
-    buildNotificationScopeWhere,
-    isAllowedNotificationRole,
-} = require('../utils/notificationHelpers');
+'use strict';
+
+const { prisma }     = require('../config/db');
+const { allowedNotificationRoles, buildNotificationScopeWhere, isAllowedNotificationRole } =
+    require('../utils/notificationHelpers');
+const asyncHandler   = require('../utils/asyncHandler');
+const { sendSuccess, sendError, requireAdminGuard } = require('../utils/apiResponse');
+
+// ─── QUERY SHAPES ─────────────────────────────────────────────────────────────
 
 const notificationInclude = {
     recipient: {
         select: {
-            id: true,
+            id:        true,
             firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-            role: true,
+            lastName:  true,
+            email:     true,
+            phone:     true,
+            role:      true,
         },
     },
 };
 
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+
 const formatNotification = (notification) => {
     if (!notification) return null;
-
     return {
         ...notification,
         recipient: notification.recipient || null,
     };
 };
 
-const requireAdmin = (req, res) => {
-    if (!req.user || req.user.role !== 'admin') {
-        res.status(403).json({ success: false, message: 'Forbidden: admin access required' });
-        return false;
-    }
-
-    return true;
-};
-
 const validateNotificationPayload = async (payload) => {
-    const recipientRole = payload.recipientRole;
+    const { recipientRole } = payload;
+
     if (!isAllowedNotificationRole(recipientRole)) {
         return 'recipientRole must be driver or customer';
     }
-
     if (!payload.title || !payload.title.trim()) {
         return 'title is required';
     }
-
     if (!payload.message || !payload.message.trim()) {
         return 'message is required';
     }
 
     if (payload.recipientUserId) {
         const recipient = await prisma.user.findUnique({
-            where: { id: payload.recipientUserId },
+            where:  { id: payload.recipientUserId },
             select: { id: true, role: true },
         });
-
         if (!recipient) {
             return 'recipientUserId not found';
         }
-
         if (recipient.role !== recipientRole) {
             return 'recipientUserId does not match recipientRole';
         }
@@ -68,154 +60,131 @@ const validateNotificationPayload = async (payload) => {
     return null;
 };
 
-exports.getDriverNotifications = async (req, res) => {
-    try {
-        if (!req.user || req.user.role !== 'driver') {
-            return res.status(403).json({ success: false, message: 'Forbidden: driver access required' });
-        }
+// ─── HANDLERS ─────────────────────────────────────────────────────────────────
 
-        const where = buildNotificationScopeWhere('driver', req.user.id);
-
-        const notifications = await prisma.notification.findMany({
-            where,
-            include: notificationInclude,
-            orderBy: { createdAt: 'desc' },
-        });
-
-        return res.status(200).json({
-            success: true,
-            role: 'driver',
-            count: notifications.length,
-            data: notifications.map(formatNotification),
-        });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
+exports.getDriverNotifications = asyncHandler(async (req, res) => {
+    if (!req.user || req.user.role !== 'driver') {
+        return sendError(res, 403, 'Forbidden: driver access required');
     }
-};
 
-exports.getCustomerNotifications = async (req, res) => {
-    try {
-        if (!req.user || req.user.role !== 'customer') {
-            return res.status(403).json({ success: false, message: 'Forbidden: customer access required' });
-        }
+    const where = buildNotificationScopeWhere('driver', req.user.id);
+    const notifications = await prisma.notification.findMany({
+        where,
+        include: notificationInclude,
+        orderBy: { createdAt: 'desc' },
+    });
 
-        const where = buildNotificationScopeWhere('customer', req.user.id);
+    return sendSuccess(res, 200, {
+        role:  'driver',
+        count: notifications.length,
+        data:  notifications.map(formatNotification),
+    });
+});
 
-        const notifications = await prisma.notification.findMany({
-            where,
-            include: notificationInclude,
-            orderBy: { createdAt: 'desc' },
-        });
-
-        return res.status(200).json({
-            success: true,
-            role: 'customer',
-            count: notifications.length,
-            data: notifications.map(formatNotification),
-        });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
+exports.getCustomerNotifications = asyncHandler(async (req, res) => {
+    if (!req.user || req.user.role !== 'customer') {
+        return sendError(res, 403, 'Forbidden: customer access required');
     }
-};
 
-exports.createNotification = async (req, res) => {
-    try {
-        // if (!requireAdmin(req, res)) return;
+    const where = buildNotificationScopeWhere('customer', req.user.id);
+    const notifications = await prisma.notification.findMany({
+        where,
+        include: notificationInclude,
+        orderBy: { createdAt: 'desc' },
+    });
 
-        const payload = {
-            recipientRole: req.body.recipientRole,
-            recipientUserId: req.body.recipientUserId || null,
-            title: req.body.title,
-            message: req.body.message,
-            type: req.body.type || 'general',
-            isRead: req.body.isRead === true,
-        };
+    return sendSuccess(res, 200, {
+        role:  'customer',
+        count: notifications.length,
+        data:  notifications.map(formatNotification),
+    });
+});
 
-        const validationError = await validateNotificationPayload(payload);
-        if (validationError) {
-            return res.status(400).json({ success: false, message: validationError });
-        }
+exports.createNotification = asyncHandler(async (req, res) => {
+    // Security guard restored — only admins may create notifications
+    if (!requireAdminGuard(req, res)) return;
 
-        const notification = await prisma.notification.create({
-            data: payload,
-            include: notificationInclude,
-        });
+    const payload = {
+        recipientRole:   req.body.recipientRole,
+        recipientUserId: req.body.recipientUserId || null,
+        title:           req.body.title,
+        message:         req.body.message,
+        type:            req.body.type || 'general',
+        isRead:          req.body.isRead === true,
+    };
 
-        return res.status(201).json({ success: true, data: formatNotification(notification) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
+    const validationError = await validateNotificationPayload(payload);
+    if (validationError) {
+        return sendError(res, 400, validationError);
     }
-};
 
-exports.updateNotification = async (req, res) => {
-    try {
-        if (!requireAdmin(req, res)) return;
+    const notification = await prisma.notification.create({
+        data:    payload,
+        include: notificationInclude,
+    });
 
-        const { id } = req.params;
-        const existing = await prisma.notification.findUnique({ where: { id } });
+    return sendSuccess(res, 201, { data: formatNotification(notification) });
+});
 
-        if (!existing) {
-            return res.status(404).json({ success: false, message: 'Notification not found' });
-        }
+exports.updateNotification = asyncHandler(async (req, res) => {
+    if (!requireAdminGuard(req, res)) return;
 
-        const nextRecipientRole = req.body.recipientRole !== undefined ? req.body.recipientRole : existing.recipientRole;
-        if (!isAllowedNotificationRole(nextRecipientRole)) {
-            return res.status(400).json({ success: false, message: 'recipientRole must be driver or customer' });
-        }
+    const { id } = req.params;
+    const existing = await prisma.notification.findUnique({ where: { id } });
+    if (!existing) {
+        return sendError(res, 404, 'Notification not found');
+    }
 
-        const nextRecipientUserId = req.body.recipientUserId !== undefined ? req.body.recipientUserId : existing.recipientUserId;
-        const nextTitle = req.body.title !== undefined ? req.body.title : existing.title;
-        const nextMessage = req.body.message !== undefined ? req.body.message : existing.message;
-        const nextType = req.body.type !== undefined ? req.body.type : existing.type;
-        const nextIsRead = req.body.isRead !== undefined ? req.body.isRead : existing.isRead;
+    const nextRecipientRole   = req.body.recipientRole   !== undefined ? req.body.recipientRole   : existing.recipientRole;
+    const nextRecipientUserId = req.body.recipientUserId !== undefined ? req.body.recipientUserId : existing.recipientUserId;
+    const nextTitle           = req.body.title           !== undefined ? req.body.title           : existing.title;
+    const nextMessage         = req.body.message         !== undefined ? req.body.message         : existing.message;
+    const nextType            = req.body.type            !== undefined ? req.body.type            : existing.type;
+    const nextIsRead          = req.body.isRead          !== undefined ? req.body.isRead          : existing.isRead;
 
-        const validationError = await validateNotificationPayload({
-            recipientRole: nextRecipientRole,
+    if (!isAllowedNotificationRole(nextRecipientRole)) {
+        return sendError(res, 400, 'recipientRole must be driver or customer');
+    }
+
+    const validationError = await validateNotificationPayload({
+        recipientRole:   nextRecipientRole,
+        recipientUserId: nextRecipientUserId,
+        title:           nextTitle,
+        message:         nextMessage,
+    });
+    if (validationError) {
+        return sendError(res, 400, validationError);
+    }
+
+    const notification = await prisma.notification.update({
+        where: { id },
+        data: {
+            recipientRole:   nextRecipientRole,
             recipientUserId: nextRecipientUserId,
-            title: nextTitle,
-            message: nextMessage,
-        });
+            title:           nextTitle,
+            message:         nextMessage,
+            type:            nextType,
+            isRead:          nextIsRead,
+        },
+        include: notificationInclude,
+    });
 
-        if (validationError) {
-            return res.status(400).json({ success: false, message: validationError });
-        }
+    return sendSuccess(res, 200, { data: formatNotification(notification) });
+});
 
-        const notification = await prisma.notification.update({
-            where: { id },
-            data: {
-                recipientRole: nextRecipientRole,
-                recipientUserId: nextRecipientUserId,
-                title: nextTitle,
-                message: nextMessage,
-                type: nextType,
-                isRead: nextIsRead,
-            },
-            include: notificationInclude,
-        });
+exports.deleteNotification = asyncHandler(async (req, res) => {
+    // Security guard restored — only admins may delete notifications
+    if (!requireAdminGuard(req, res)) return;
 
-        return res.status(200).json({ success: true, data: formatNotification(notification) });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
+    const { id } = req.params;
+    const existing = await prisma.notification.findUnique({ where: { id } });
+    if (!existing) {
+        return sendError(res, 404, 'Notification not found');
     }
-};
 
-exports.deleteNotification = async (req, res) => {
-    try {
-        // if (!requireAdmin(req, res)) return;
+    await prisma.notification.delete({ where: { id } });
 
-        const { id } = req.params;
-        const existing = await prisma.notification.findUnique({ where: { id } });
-
-        if (!existing) {
-            return res.status(404).json({ success: false, message: 'Notification not found' });
-        }
-
-        await prisma.notification.delete({ where: { id } });
-
-        return res.status(200).json({ success: true, message: 'Notification deleted' });
-    } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
-    }
-};
+    return sendSuccess(res, 200, { message: 'Notification deleted' });
+});
 
 exports.allowedNotificationRoles = allowedNotificationRoles;
