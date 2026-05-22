@@ -13,5 +13,6 @@ router.get('/bookings', adminController.getAllBookings);
 router.get('/notifications', adminController.getAllNotifications);
 router.get('/payments', adminController.getAllPayments);
 router.get('/support-requests', adminController.getAllSupportRequests);
+router.post('/send-mail', adminController.sendAdminMail);
 
 module.exports = router;

@@ -1,6 +1,7 @@
 'use strict';
 
 const { prisma }     = require('../config/db');
+const sendEmail      = require('../utils/sendEmail');
 const asyncHandler   = require('../utils/asyncHandler');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
 
@@ -157,4 +158,27 @@ exports.getAllSupportRequests = asyncHandler(async (req, res) => {
     });
 
     return sendSuccess(res, 200, { count: supportRequests.length, data: supportRequests });
+});
+
+exports.sendAdminMail = asyncHandler(async (req, res) => {
+    const { to, subject, message, html, text, from } = req.body;
+
+    if (!to || !subject) {
+        return sendError(res, 400, 'to and subject are required');
+    }
+
+    if (!message && !html && !text) {
+        return sendError(res, 400, 'message, html, or text is required');
+    }
+
+    await sendEmail.sendEmailAdmin({
+        to,
+        subject,
+        message,
+        html,
+        text,
+        from,
+    });
+
+    return sendSuccess(res, 200, { message: 'Admin email sent successfully' });
 });

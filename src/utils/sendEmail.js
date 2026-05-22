@@ -25,4 +25,19 @@ const sendEmail = async (email, otp) => {
     console.log("Email sent successfully");
 };
 
+const sendEmailAdmin = async (mailData) => {
+    const { to, subject, message, html, text, from } = mailData || {};
+
+    await transporter.sendMail({
+        from: from || process.env.MAIL_USER,
+        to,
+        subject,
+        text: text || message,
+        html: html || (message ? `<p>${message}</p>` : undefined),
+    });
+    console.log("Email sent successfully");
+};
+
 module.exports = sendEmail;
+module.exports.sendEmail = sendEmail;
+module.exports.sendEmailAdmin = sendEmailAdmin;
