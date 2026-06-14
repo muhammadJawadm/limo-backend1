@@ -41,7 +41,7 @@ app.set('io', io);
 initSocket(io);
 setIo(io);
 
-const allowedOrigins = [process.env.FRONTEND_URL, process.env.ADMIN_URL];
+const allowedOrigins = [process.env.FRONTEND_URL, process.env.ADMIN_URL, process.env.FRONTEND_URL1];
 
 // ── MIDDLEWARE ──────────────────────────────────────────────────
 app.use(helmet());
