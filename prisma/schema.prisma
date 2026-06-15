@@ -213,7 +213,6 @@ model Driver {
   vehiclePassengerCapacity   Int?
   vehicleLuggageCapacity     Int?
   vehicleWifi                Boolean?
-  vehicleSmokingAllowed      Boolean?
   vehicleNumberPlate         String?
   vehicleVIN                 String?
 

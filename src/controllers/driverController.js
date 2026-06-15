@@ -214,7 +214,6 @@ const formatDriver = (driver) => {
             passengerCapacity: driver.vehiclePassengerCapacity,
             luggageCapacity: driver.vehicleLuggageCapacity,
             wifi: driver.vehicleWifi,
-            smokingAllowed: driver.vehicleSmokingAllowed,
             vehicleNumberPlate: driver.vehicleNumberPlate,
             vehicleVIN: driver.vehicleVIN,
         },
@@ -543,7 +542,6 @@ exports.updateFirstVehicleInformation = asyncHandler(async (req, res) => {
     if (body.passengerCapacity !== undefined) data.vehiclePassengerCapacity = body.passengerCapacity;
     if (body.luggageCapacity !== undefined) data.vehicleLuggageCapacity = body.luggageCapacity;
     if (body.wifi !== undefined) data.vehicleWifi = body.wifi;
-    if (body.smokingAllowed !== undefined) data.vehicleSmokingAllowed = body.smokingAllowed;
     if (body.vehicleNumberPlate !== undefined) data.vehicleNumberPlate = body.vehicleNumberPlate;
     if (body.vehicleVIN !== undefined) data.vehicleVIN = body.vehicleVIN;
 
@@ -742,8 +740,6 @@ exports.updateOnboardingFields = asyncHandler(async (req, res) => {
     else if (vehicle.luggageCapacity !== undefined) driverData.vehicleLuggageCapacity = vehicle.luggageCapacity;
     if (body.wifi !== undefined) driverData.vehicleWifi = body.wifi;
     else if (vehicle.wifi !== undefined) driverData.vehicleWifi = vehicle.wifi;
-    if (body.smokingAllowed !== undefined) driverData.vehicleSmokingAllowed = body.smokingAllowed;
-    else if (vehicle.smokingAllowed !== undefined) driverData.vehicleSmokingAllowed = vehicle.smokingAllowed;
     if (body.vehicleNumberPlate !== undefined) driverData.vehicleNumberPlate = body.vehicleNumberPlate;
     else if (vehicle.vehicleNumberPlate !== undefined) driverData.vehicleNumberPlate = vehicle.vehicleNumberPlate;
     if (body.vehicleVIN !== undefined) driverData.vehicleVIN = body.vehicleVIN;
