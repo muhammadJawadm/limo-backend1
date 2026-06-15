@@ -214,10 +214,12 @@ const driverConnectStatus = asyncHandler(async (req, res) => {
     const eventuallyDue = account.requirements?.eventually_due || [];
     const disabledReason = account.requirements?.disabled_reason || null;
 
-    const isOnboarded =
-        detailsSubmitted &&
-        payoutsEnabled &&
-        currentlyDue.length === 0;
+    // A driver is considered onboarded once Stripe has verified enough to enable
+    // payouts. We deliberately exclude `currentlyDue.length === 0` because Stripe
+    // fires additional account.updated webhooks for async identity/bank checks
+    // (e.g. individual.verification.document) that temporarily populate currently_due
+    // WITHOUT disabling payouts — causing false negatives if we check that field.
+    const isOnboarded = detailsSubmitted && payoutsEnabled;
 
     if (driver.stripeOnboarded !== isOnboarded) {
         await prisma.driver.update({
@@ -382,12 +384,12 @@ const webhook = async (req, res) => {
 
                 const detailsSubmitted = Boolean(account.details_submitted);
                 const payoutsEnabled = Boolean(account.payouts_enabled);
-                const currentlyDue = account.requirements?.currently_due || [];
 
-                const isOnboarded =
-                    detailsSubmitted &&
-                    payoutsEnabled &&
-                    currentlyDue.length === 0;
+                // Same rule as driverConnectStatus: only require details_submitted
+                // and payouts_enabled. Stripe fires multiple account.updated events
+                // during async verification (populating currently_due temporarily)
+                // which would falsely reset stripeOnboarded to false if we checked it.
+                const isOnboarded = detailsSubmitted && payoutsEnabled;
 
                 await prisma.driver.updateMany({
                     where: { stripeAccountId: account.id },
