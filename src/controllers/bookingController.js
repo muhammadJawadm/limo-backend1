@@ -9,7 +9,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
 const { EMAIL_REGEX, validatePassengerDetails, validateBookerDetails } = require('../utils/validators');
 const { calculateDistance } = require('../utils/googleMaps');
-const { calculateTotalFare, calculateFareBreakdown, calculateToll } = require('../utils/fareCalculation');
+const { TAX_RATE, calculateTax, calculateTotalFare, calculateFareBreakdown, calculateToll } = require('../utils/fareCalculation');
 // Child seat rates (USD) — adjust as needed or move to env/config
 const CHILD_SEAT_RATES = {
     infant: 15, // per infant seat
@@ -209,7 +209,7 @@ const buildBookingData = (payload) => {
         'type', 'pickupLocation', 'dropoffLocation', 'date', 'time', 'hours', 'vehicleCategoryId',
         'assignedDriverId', 'confNumber', 'rideStatus', 'totalAmount', 'flightNumber', 'noOfPassengers',
         'luggage', 'childSeatRequired', 'isGuest', 'userId', 'specialInstructions', 'paymentStatus',
-        'paymentIntentId', 'paymentMethodId', 'cardBrand', 'chargeId', 'receiptUrl', 'paymentConfirmedAt', 'platformFee', 'driverAmount', 'tripPrice', 'tollCharges', 'otherFees', 'childSeatInfant',
+        'paymentIntentId', 'paymentMethodId', 'cardBrand', 'chargeId', 'receiptUrl', 'paymentConfirmedAt', 'platformFee', 'driverAmount', 'tripPrice', 'tollCharges', 'taxAmount', 'otherFees', 'childSeatInfant',
         'childSeatToddler', 'childSeatBooster', 'bookerFirstName', 'bookerLastName', 'bookerEmail', 'bookerPhone',
     ];
     for (const field of directFields) {
@@ -259,6 +259,7 @@ const calculateBookingPricing = async (raw, category, stopLocations, logLabel) =
             );
 
             const tollCharges = calculateToll(distanceMiles);
+            const taxAmount = calculateTax(tripFare + tollCharges);
 
             fareBreakdown = calculateFareBreakdown(
                 raw.type,
@@ -269,28 +270,39 @@ const calculateBookingPricing = async (raw, category, stopLocations, logLabel) =
                 category.perMileRate40,
                 category.perHour
             );
+            fareBreakdown.tollCharges = tollCharges;
+            fareBreakdown.taxRate = parseFloat((TAX_RATE * 100).toFixed(4));
+            fareBreakdown.taxAmount = taxAmount;
+            fareBreakdown.total = parseFloat((tripFare + tollCharges + taxAmount).toFixed(2));
 
             return {
                 distanceMiles,
                 fareBreakdown,
                 tripPrice: tripFare,
                 tollCharges,
+                taxAmount,
             };
         }
 
+        const fallbackTripPrice = toNum(category.baseFare);
+        const fallbackTax = calculateTax(fallbackTripPrice);
         return {
             distanceMiles: 0,
             fareBreakdown: null,
-            tripPrice: toNum(category.baseFare),
+            tripPrice: fallbackTripPrice,
             tollCharges: 0,
+            taxAmount: fallbackTax,
         };
     } catch (error) {
         console.error(`Distance calculation error in ${logLabel}:`, error);
+        const fallbackTripPrice = toNum(category.baseFare);
+        const fallbackTax = calculateTax(fallbackTripPrice);
         return {
             distanceMiles: 0,
             fareBreakdown: null,
-            tripPrice: toNum(category.baseFare),
+            tripPrice: fallbackTripPrice,
             tollCharges: 0,
+            taxAmount: fallbackTax,
         };
     }
 };
@@ -354,9 +366,10 @@ const createBookingFromPayload = async (req, raw, options = {}) => {
     data.distanceMiles = pricing.distanceMiles;
     data.tripPrice = pricing.tripPrice;
     data.tollCharges = pricing.tollCharges;
+    data.taxAmount = pricing.taxAmount;
     data.childSeatsFee = 0;
     data.otherFees = data.otherFees || 0;
-    data.totalAmount = parseFloat((data.tripPrice + data.tollCharges + data.otherFees).toFixed(2));
+    data.totalAmount = parseFloat((data.tripPrice + data.tollCharges + data.taxAmount + data.otherFees).toFixed(2));
 
     const booking = await prisma.booking.create({
         data: { ...data, stopLocations: { create: stopLocations.map((loc) => ({ location: loc })) } },
@@ -373,6 +386,7 @@ const formatBooking = (booking) => {
         // Pricing (at root level)
         tripPrice: booking.tripPrice || 0,
         tollCharges: booking.tollCharges || 0,
+        taxAmount: booking.taxAmount || 0,
         childSeatsFee: 0,
         otherFees: booking.otherFees || 0,
         // Nested objects for convenience
@@ -517,14 +531,21 @@ exports.updateBookingStep2 = asyncHandler(async (req, res) => {
             category.perHour
         );
 
+        const taxAmount = calculateTax(tripFare + tollCharges);
+        fareBreakdown.tollCharges = tollCharges;
+        fareBreakdown.taxRate = parseFloat((TAX_RATE * 100).toFixed(4));
+        fareBreakdown.taxAmount = taxAmount;
+        fareBreakdown.total = parseFloat((tripFare + tollCharges + taxAmount).toFixed(2));
+
         const data = buildBookingData(raw);
         data.vehicleCategoryId = vehicleCategoryId;
         data.distanceMiles = distanceMiles;
-        data.tripPrice = tripFare; // fare portion excluding child seats / toll / other fees
+        data.tripPrice = tripFare;
         data.tollCharges = tollCharges;
+        data.taxAmount = taxAmount;
         data.childSeatsFee = 0;
         data.otherFees = toNum(existing.otherFees);
-        data.totalAmount = parseFloat((tripFare + tollCharges + data.otherFees).toFixed(2));
+        data.totalAmount = parseFloat((tripFare + tollCharges + taxAmount + data.otherFees).toFixed(2));
 
         const booking = await prisma.booking.update({ where: { id }, data, include: bookingInclude });
 
@@ -541,10 +562,11 @@ exports.updateBookingStep2 = asyncHandler(async (req, res) => {
         const data = buildBookingData(raw);
         data.vehicleCategoryId = vehicleCategoryId;
         data.tripPrice = toNum(category.baseFare);
-        data.tollCharges = 0; // No toll calculated when distance fails
+        data.tollCharges = 0;
+        data.taxAmount = calculateTax(data.tripPrice);
         data.childSeatsFee = 0;
         data.otherFees = toNum(existing.otherFees);
-        data.totalAmount = parseFloat((data.tripPrice + data.otherFees).toFixed(2));
+        data.totalAmount = parseFloat((data.tripPrice + data.taxAmount + data.otherFees).toFixed(2));
 
         const booking = await prisma.booking.update({ where: { id }, data, include: bookingInclude });
 
@@ -598,6 +620,7 @@ exports.updateBookingStep3 = asyncHandler(async (req, res) => {
     const tripPrice = toNum(existing.tripPrice);
     const tollCharges = toNum(existing.tollCharges);
     const otherFees = toNum(existing.otherFees);
+    const taxAmount = toNum(existing.taxAmount) || calculateTax(tripPrice + tollCharges);
 
     const payload = {
         childSeatRequired:
@@ -612,8 +635,9 @@ exports.updateBookingStep3 = asyncHandler(async (req, res) => {
         childSeatsFee: 0,
         tripPrice,
         tollCharges,
+        taxAmount,
         otherFees,
-        totalAmount: parseFloat((tripPrice + tollCharges + otherFees).toFixed(2)),
+        totalAmount: parseFloat((tripPrice + tollCharges + taxAmount + otherFees).toFixed(2)),
     };
 
     const booking = await prisma.booking.update({
@@ -800,6 +824,13 @@ exports.createGuestBooking = asyncHandler(async (req, res) => {
             data.distanceMiles = distanceMiles;
             data.tripPrice = tripFare;
             data.tollCharges = tollCharges;
+
+            if (fareBreakdown) {
+                fareBreakdown.tollCharges = tollCharges;
+                fareBreakdown.taxRate = parseFloat((TAX_RATE * 100).toFixed(4));
+                fareBreakdown.taxAmount = calculateTax(tripFare + tollCharges);
+                fareBreakdown.total = parseFloat((tripFare + tollCharges + fareBreakdown.taxAmount).toFixed(2));
+            }
         } else {
             data.tripPrice = toNum(category.baseFare);
             data.tollCharges = 0;
@@ -812,7 +843,8 @@ exports.createGuestBooking = asyncHandler(async (req, res) => {
 
     data.childSeatsFee = 0;
     data.otherFees = data.otherFees || 0;
-    data.totalAmount = parseFloat((data.tripPrice + data.tollCharges + data.otherFees).toFixed(2));
+    data.taxAmount = calculateTax(data.tripPrice + data.tollCharges);
+    data.totalAmount = parseFloat((data.tripPrice + data.tollCharges + data.taxAmount + data.otherFees).toFixed(2));
 
     const booking = await prisma.booking.create({
         data: { ...data, stopLocations: { create: stopLocations.map((loc) => ({ location: loc })) } },

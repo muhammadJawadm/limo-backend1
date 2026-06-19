@@ -419,6 +419,7 @@ model Booking {
   tripPrice           Decimal       @default(0) @db.Decimal(10, 2)
   tollCharges         Decimal       @default(0) @db.Decimal(10, 2)
   childSeatsFee       Decimal       @default(0) @db.Decimal(10, 2)
+  taxAmount           Decimal       @default(0) @db.Decimal(10, 2)
   otherFees           Decimal       @default(0) @db.Decimal(10, 2)
 
   // Payment Info (flattened)

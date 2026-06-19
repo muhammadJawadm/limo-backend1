@@ -317,6 +317,7 @@ const mapRideForDriver = (booking) => {
             paymentStatus: booking.paymentStatus || null,
             paymentIntentId: booking.paymentIntentId || null,
             paymentMethodId: booking.paymentMethodId || null,
+            taxAmount : Number(booking.taxAmount) || 0,
         },
     };
 };

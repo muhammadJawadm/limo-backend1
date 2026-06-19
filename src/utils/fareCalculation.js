@@ -1,3 +1,8 @@
+const TAX_RATE = 0.0825;
+
+const calculateTax = (pretaxAmount) =>
+    parseFloat((Number(pretaxAmount) * TAX_RATE).toFixed(2));
+
 const calculateFareForPtoP = (distanceMiles, perMileRate30, perMileRate40) => {
     const d = Number(distanceMiles);
     const r30 = Number(perMileRate30);
@@ -70,6 +75,8 @@ const calculateToll = (distanceMiles, tollRate = 0.15) => {
 };
 
 module.exports = {
+    TAX_RATE,
+    calculateTax,
     calculateFareForPtoP,
     calculateTotalFare,
     calculateFareBreakdown,
